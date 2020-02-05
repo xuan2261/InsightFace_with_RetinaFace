@@ -5,6 +5,7 @@ The project uses [MTCNN](https://github.com/ipazc/mtcnn) for detecting faces, th
 ## Getting started
 ### Requirements
 - Python 3.3+
+- Sklearn 0.20.1
 - Virtualenv
 - python-pip
 - mx-net
