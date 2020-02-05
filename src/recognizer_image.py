@@ -27,7 +27,7 @@ ap.add_argument("--le", default="outputs/le.pickle",
     help="Path to label encoder")
 ap.add_argument("--embeddings", default="outputs/embeddings.pickle",
     help='Path to embeddings')
-ap.add_argument("--image-out", default="../datasets/test/001_out.jpg",
+ap.add_argument("--image-out", default="outputs/001_out.jpg",
     help='Path to output video')
 ap.add_argument("--image-in", default="../datasets/test/001.jpg")
 
