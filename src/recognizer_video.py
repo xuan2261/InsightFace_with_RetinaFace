@@ -1,9 +1,11 @@
 import sys
 sys.path.append('../insightface/deploy')
 sys.path.append('../insightface/src/common')
+sys.path.append('../retinaface')
 
 from keras.models import load_model
-from mtcnn.mtcnn import MTCNN
+#from mtcnn.mtcnn import MTCNN
+from retinaface import RetinaFace
 from imutils import paths
 import face_preprocess
 import numpy as np
@@ -14,6 +16,7 @@ import time
 import dlib
 import cv2
 import os
+from sys import getsizeof
 
 ap = argparse.ArgumentParser()
 
@@ -46,9 +49,20 @@ embeddings = np.array(data['embeddings'])
 labels = le.fit_transform(data['names'])
 
 # Initialize detector
-detector = MTCNN()
+#detector = MTCNN()
+
+#retinaface detector initialization
+thresh = 0.8
+# scale for image resizing
+scales = [1.0]
+flip = False
+gpuid = 0
+detector = RetinaFace('../retinaface/pretrained_model/R50', 0, gpuid, 'net3')
 
 # Initialize faces embedding model
+print("--------args start---------")
+print(args)
+print("--------args end-----------")
 embedding_model =face_model.FaceModel(args)
 
 # Load the classifier model
@@ -88,89 +102,117 @@ frames = 0
 cap = cv2.VideoCapture(args.video_in)
 frame_width = int(cap.get(3))
 frame_height = int(cap.get(4))
-save_width = 800
-save_height = int(800/frame_width*frame_height)
+save_width = 1280
+save_height = int(1280/frame_width*frame_height)
 video_out = cv2.VideoWriter(args.video_out, cv2.VideoWriter_fourcc('M','J','P','G'), 24, (save_width,save_height))
-
+print('==================================out==================================')
 while True:
     ret, frame = cap.read()
-    frames += 1
-    frame = cv2.resize(frame, (save_width, save_height))
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    if ret:
+      frames += 1
+      frame = cv2.resize(frame, (save_width, save_height))
+      rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+      #print(getsizeof(video_out))
+      #time.sleep(1)
+      if frames%3 == 0:
+          trackers = []
+          texts = []
+          detect_tick = time.time()
+          #bboxes = detector.detect_faces(frame)
+          bboxes, landmarkses = detector.detect(frame, thresh, scales=scales, do_flip=flip)
+          detect_tock = time.time()
+          print("Faces detection time: {}s".format(detect_tock-detect_tick))
+          if len(bboxes) != 0:
+              reco_tick = time.time()
+              #print('bboxes')
+              #print(bboxes)
+              #print('landmarkses')
+              #print(landmarkses)
+              counter = 0
+              for bbox in bboxes:
+                  landmarks = landmarkses[counter]
+                  counter = counter + 1
+                  #print('==============################===============')
+                  #print('bbox')
+                  #print(bbox.size)
+                  #print(bbox)
+                  #print('landmarks')
+                  #print(landmarks.size)
+                  #print(landmarks)
+                  bbox = bbox.astype(int)
+                  #print('bbox')
+                  #print(bbox.size)
+                  #print(bbox)
+                  
+                  #bbox = np.array([bbox[0], bbox[0]+bbox[2], bbox[1], bbox[1]+bbox[3]])
+                  #print('bbox')
+                  #print(bbox.size)
+                  #print(bbox)
+                  
+                  landmarks = np.array([landmarks[0][0], landmarks[1][0], landmarks[2][0], landmarks[3][0], landmarks[4][0],
+                                      landmarks[0][1], landmarks[1][1], landmarks[2][1], landmarks[3][1], landmarks[4][1]])
+                  landmarks = landmarks.reshape((2,5)).T
+                  nimg = face_preprocess.preprocess(frame, bbox, landmarks, image_size='112,112')
+                  nimg = cv2.cvtColor(nimg, cv2.COLOR_BGR2RGB)
 
-    if frames%3 == 0:
-        trackers = []
-        texts = []
+                  nimg = np.transpose(nimg, (2,0,1))
+                  #print(nimg.shape)
+                  embedding = embedding_model.get_feature(nimg)
+                  #print(embedding.shape)
+                  embedding = embedding_model.get_feature(nimg).reshape(1,-1)
+                  #print(embedding.shape)
+                  text = "Unknown"
+                  # Predict class
+                  #print(embedding.shape)
+                  preds = model.predict(embedding)
+                  preds = preds.flatten()
+                  # Get the highest accuracy embedded vector
+                  j = np.argmax(preds)
+                  proba = preds[j]
+                  # Compare this vector to source class vectors to verify it is actual belong to this class
+                  match_class_idx = (labels == j)
+                  match_class_idx = np.where(match_class_idx)[0]
+                  selected_idx = np.random.choice(match_class_idx, comparing_num)
+                  compare_embeddings = embeddings[selected_idx]
+                  # Calculate cosine similarity
+                  cos_similarity = CosineSimilarity(embedding, compare_embeddings)
+                  if cos_similarity < cosine_threshold and proba > proba_threshold:
+                      name = le.classes_[j]
+                      text = "{}".format(name)
+                      print("Recognized: {} <{:.2f}>".format(name, proba*100))
+                  # Start tracking
+                  tracker = dlib.correlation_tracker()
+                  rect = dlib.rectangle(bbox[0], bbox[1], bbox[2], bbox[3])
+                  tracker.start_track(rgb, rect)
+                  trackers.append(tracker)
+                  texts.append(text)
+                  y = bbox[1] - 10 if bbox[1] - 10 > 10 else bbox[1] + 10
+                  cv2.putText(frame, text, (bbox[0], y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 2)
+                  cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (255,0,0), 2)
+      else:
+          for tracker, text in zip(trackers,texts):
+              pos = tracker.get_position()
 
-        detect_tick = time.time()
-        bboxes = detector.detect_faces(frame)
-        detect_tock = time.time()
+              # unpack the position object
+              startX = int(pos.left())
+              startY = int(pos.top())
+              endX = int(pos.right())
+              endY = int(pos.bottom())
 
-        if len(bboxes) != 0:
-            reco_tick = time.time()
-            for bboxe in bboxes:
-                bbox = bboxe['box']
-                bbox = np.array([bbox[0], bbox[1], bbox[0]+bbox[2], bbox[1]+bbox[3]])
-                landmarks = bboxe['keypoints']
-                landmarks = np.array([landmarks["left_eye"][0], landmarks["right_eye"][0], landmarks["nose"][0], landmarks["mouth_left"][0], landmarks["mouth_right"][0],
-                                     landmarks["left_eye"][1], landmarks["right_eye"][1], landmarks["nose"][1], landmarks["mouth_left"][1], landmarks["mouth_right"][1]])
-                landmarks = landmarks.reshape((2,5)).T
-                nimg = face_preprocess.preprocess(frame, bbox, landmarks, image_size='112,112')
-                nimg = cv2.cvtColor(nimg, cv2.COLOR_BGR2RGB)
-                nimg = np.transpose(nimg, (2,0,1))
-                embedding = embedding_model.get_feature(nimg).reshape(1,-1)
+              cv2.rectangle(frame, (startX, startY), (endX, endY), (255,0,0), 2)
+              cv2.putText(frame, text, (startX, startY - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0,0,255),2)
+      #print('hello3')
+      #cv2.imshow("Frame", frame)
+      video_out.write(frame)
+      # print("Faces detection time: {}s".format(detect_tock-detect_tick))
+      # print("Faces recognition time: {}s".format(reco_tock-reco_tick))
+      #key = cv2.waitKey(1) & 0xFF
 
-                text = "Unknown"
-
-                # Predict class
-                preds = model.predict(embedding)
-                preds = preds.flatten()
-                # Get the highest accuracy embedded vector
-                j = np.argmax(preds)
-                proba = preds[j]
-                # Compare this vector to source class vectors to verify it is actual belong to this class
-                match_class_idx = (labels == j)
-                match_class_idx = np.where(match_class_idx)[0]
-                selected_idx = np.random.choice(match_class_idx, comparing_num)
-                compare_embeddings = embeddings[selected_idx]
-                # Calculate cosine similarity
-                cos_similarity = CosineSimilarity(embedding, compare_embeddings)
-                if cos_similarity < cosine_threshold and proba > proba_threshold:
-                    name = le.classes_[j]
-                    text = "{}".format(name)
-                    print("Recognized: {} <{:.2f}>".format(name, proba*100))
-                # Start tracking
-                tracker = dlib.correlation_tracker()
-                rect = dlib.rectangle(bbox[0], bbox[1], bbox[2], bbox[3])
-                tracker.start_track(rgb, rect)
-                trackers.append(tracker)
-                texts.append(text)
-
-                y = bbox[1] - 10 if bbox[1] - 10 > 10 else bbox[1] + 10
-                cv2.putText(frame, text, (bbox[0], y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 2)
-                cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (255,0,0), 2)
+      #if key == ord("q"):
+      #   break
     else:
-        for tracker, text in zip(trackers,texts):
-            pos = tracker.get_position()
-
-            # unpack the position object
-            startX = int(pos.left())
-            startY = int(pos.top())
-            endX = int(pos.right())
-            endY = int(pos.bottom())
-
-            cv2.rectangle(frame, (startX, startY), (endX, endY), (255,0,0), 2)
-            cv2.putText(frame, text, (startX, startY - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0,0,255),2)
-
-    cv2.imshow("Frame", frame)
-    video_out.write(frame)
-    # print("Faces detection time: {}s".format(detect_tock-detect_tick))
-    # print("Faces recognition time: {}s".format(reco_tock-reco_tick))
-    key = cv2.waitKey(1) & 0xFF
-
-    if key == ord("q"):
-        break
+       break
 
 video_out.release()
 cap.release()
-cv2.destroyAllWindows()
+#cv2.destroyAllWindows()
